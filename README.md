@@ -31,8 +31,11 @@ python3 -m http.server 8000
   secret scanners don't flag the repo). That is not real security — it's a
   free-tier key with a hard spending cap. If it gets abused, revoke it at
   [openrouter.ai/keys](https://openrouter.ai/keys) and paste in a new one.
-- `typesafe/jev-router` is steered to prefer the OpenAI/Google upstreams
-  (`provider.order` in `app.js`) — its default DeepSeek pick burns the whole
-  token budget reasoning and never answers.
+- Calls go to OpenRouter's **Decisions API** (`POST /api/alpha/decisions`,
+  model `typesafe/jev-1.13`) — real Jev, served by TypeSafe, returning native
+  probabilities per option. Verified 8/8 at ~0.4s per call.
+- Do NOT switch back to `typesafe/jev-router` on chat/completions: it delegates
+  to OpenAI/Google/DeepSeek models (not Jev) and hung on ~40% of requests in
+  testing; its fallback path never returns.
 - The look is deliberately hand-drawn: sketchy borders, hatched bars, Caveat +
   Patrick Hand fonts, paper grain.
