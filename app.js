@@ -264,8 +264,6 @@ async function jevChoice(fact, instructions, criteria) {
 function render(fact, roast, category, pct) {
   el("factEcho").textContent = fact;
   el("verdictText").textContent = roast.text;
-  el("verdictCategory").textContent = category;
-  el("verdictPct").textContent = `${pct}% likely`;
 }
 
 function reset() {
