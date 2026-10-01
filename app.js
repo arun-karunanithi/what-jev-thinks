@@ -58,12 +58,19 @@ async function run() {
   show("loading");
   try {
     let scores;
-    try {
-      scores = await askJev(fact);
-    } catch (firstTry) {
-      // one retry — the router occasionally lands on a model that rambles
-      scores = await askJev(fact);
+    let lastErr;
+    // the router's upstreams vary minute to minute; a fresh attempt often
+    // lands on a fast one, so retry twice before giving up
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        scores = await askJev(fact);
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
     }
+    if (lastErr) throw lastErr;
     render(fact, scores);
     show("result");
   } catch (err) {
@@ -84,14 +91,20 @@ async function askJev(fact) {
     `Rate the probability (0-100) that each statement is true about this person. ` +
     `Be funny, be brutal, but stay plausible.`;
 
-  const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": SITE_URL,
-      "X-Title": "What Jev thinks about you",
-    },
+  // a router upstream can hang forever; never let the fetch outlive this
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  let resp;
+  try {
+    resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        // no HTTP-Referer/X-Title here: this exact body + those headers
+        // trips a WAF rule at OpenRouter's edge and the request hangs
+      },
     body: JSON.stringify({
       model: MODEL,
       temperature: 0.8,
@@ -115,15 +128,23 @@ async function askJev(fact) {
     }),
   });
 
-  if (!resp.ok) {
-    if (resp.status === 401) throw new Error("Jev refuses to recognize this key. (API key rejected)");
-    if (resp.status === 429) throw new Error("Jev needs a breather \u2014 rate limited. Try again in a minute.");
-    throw new Error(`Jev hit a snag (HTTP ${resp.status}). Try again.`);
-  }
+    if (!resp.ok) {
+      if (resp.status === 401) throw new Error("Jev refuses to recognize this key. (API key rejected)");
+      if (resp.status === 429) throw new Error("Jev needs a breather \u2014 rate limited. Try again in a minute.");
+      throw new Error(`Jev hit a snag (HTTP ${resp.status}). Try again.`);
+    }
 
-  const data = await resp.json();
-  const text = data.choices?.[0]?.message?.content ?? "";
-  return parseScores(text);
+    const data = await resp.json();
+    const text = data.choices?.[0]?.message?.content ?? "";
+    return parseScores(text);
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error("Jev wandered off mid-judgement. Give it another go.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function parseScores(text) {
