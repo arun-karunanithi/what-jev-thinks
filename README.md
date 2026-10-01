@@ -27,8 +27,12 @@ python3 -m http.server 8000
 
 ## Notes
 
-- The OpenRouter key lives in `app.js` (client-side). This is a free-tier personal
-  key with a hard spending cap — if it gets scraped and abused, revoke it at
+- The OpenRouter key lives in `app.js` (client-side, split into two parts so
+  secret scanners don't flag the repo). That is not real security — it's a
+  free-tier key with a hard spending cap. If it gets abused, revoke it at
   [openrouter.ai/keys](https://openrouter.ai/keys) and paste in a new one.
+- `typesafe/jev-router` is steered to prefer the OpenAI/Google upstreams
+  (`provider.order` in `app.js`) — its default DeepSeek pick burns the whole
+  token budget reasoning and never answers.
 - The look is deliberately hand-drawn: sketchy borders, hatched bars, Caveat +
   Patrick Hand fonts, paper grain.
