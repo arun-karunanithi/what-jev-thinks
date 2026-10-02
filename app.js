@@ -104,15 +104,15 @@ const ROASTS = [
   { key: "r871", category: "Shopping", text: "You buy something online and then forget you ordered it until it arrives." },
   { key: "r881", category: "Shopping", text: "You compare two products for an hour and then buy neither." },
   { key: "r891", category: "Shopping", text: "You buy something because it’s viral and then forget about it two weeks later." },
-  { key: "r901", category: "Confidence", text: "You have the confidence of someone who has never heard themselves speak and then still speak with complete authority." },
-  { key: "r911", category: "Intelligence", text: "You are wrong with incredible confidence and then treat confidence like evidence." },
-  { key: "r921", category: "Personality", text: "You have two brain cells and then keep both of them on airplane mode." },
-  { key: "r931", category: "Communication", text: "You bring nothing to a conversation and then still somehow dominate it." },
-  { key: "r941", category: "Common Sense", text: "You have the personality of a loading screen and then still expect everyone to be impressed." },
+  { key: "r901", category: "General Roast", text: "You have the confidence of someone who has never heard themselves speak and then still speak with complete authority." },
+  { key: "r911", category: "General Roast", text: "You are wrong with incredible confidence and then treat confidence like evidence." },
+  { key: "r921", category: "General Roast", text: "You have two brain cells and then keep both of them on airplane mode." },
+  { key: "r931", category: "General Roast", text: "You bring nothing to a conversation and then still somehow dominate it." },
+  { key: "r941", category: "General Roast", text: "You have the personality of a loading screen and then still expect everyone to be impressed." },
   { key: "r951", category: "General Roast", text: "You turn a two-minute story into a hostage situation." },
-  { key: "r961", category: "Decision-making", text: "You make simple things unnecessarily complicated and then act surprised by the outcome." },
-  { key: "r971", category: "Self-awareness", text: "You lose an argument with a mirror and then still think you won." },
-  { key: "r981", category: "Social", text: "You have the confidence of a genius and then have the evidence of neither." },
+  { key: "r961", category: "General Roast", text: "You make simple things unnecessarily complicated and then act surprised by the outcome." },
+  { key: "r971", category: "General Roast", text: "You lose an argument with a mirror and then still think you won." },
+  { key: "r981", category: "General Roast", text: "You have the confidence of a genius and then have the evidence of neither." },
   { key: "r991", category: "General Roast", text: "You treat common sense like an optional subscription and then still expect life to work smoothly." },
 ];
 
@@ -150,8 +150,8 @@ async function run() {
   show("loading");
   setStage("Jev is picking a category");
   try {
-    // call 1: which category of roast fits this person?
-    const category = await withRetries(() =>
+    // call 1: which category of roast fits this person? (deterministic top pick)
+    const categoryPick = await withRetries(() =>
       jevChoice(
         fact,
         "Which category of harmless roast fits this person best, based on their " +
@@ -159,28 +159,36 @@ async function run() {
         Object.fromEntries(CATEGORIES.map((c) => [c, c]))
       )
     );
+    const categoryName = topKey(categoryPick.probs);
 
     // call 2: which roast within the winning category?
-    const inCategory = ROASTS.filter((r) => r.category === category.top);
-    let verdict;
-    if (inCategory.length === 1) {
-      verdict = { roast: inCategory[0], pct: category.pct };
-    } else {
-      setStage("Found the category \u2014 now the exact roast");
-      const roastPick = await withRetries(() =>
-        jevChoice(
-          fact,
-          `This person belongs in the "${category.top}" category. Which exact ` +
-            "statement about them is most likely true and the funniest?",
-          Object.fromEntries(inCategory.map((r) => [r.key, r.text]))
-        )
-      );
-      const roast =
-        inCategory.find((r) => r.key === roastPick.top) ?? inCategory[0];
-      verdict = { roast, pct: roastPick.pct };
+    let candidates = ROASTS.filter((r) => r.category === categoryName);
+    if (candidates.length === 1) {
+      render(fact, candidates[0]);
+      show("result");
+      return;
     }
 
-    render(fact, verdict.roast, category.top, verdict.pct);
+    // General Roast gets controlled randomness: drop ~30% of the options
+    // before asking, then run a probability-weighted lottery on the answer.
+    const lottery = categoryName === "General Roast";
+    if (lottery) candidates = dropRandom30(candidates);
+
+    setStage("Found the category \u2014 now the exact roast");
+    const roastPick = await withRetries(() =>
+      jevChoice(
+        fact,
+        `This person belongs in the "${categoryName}" category. Which exact ` +
+          "statement about them is most likely true and the funniest?",
+        Object.fromEntries(candidates.map((r) => [r.key, r.text]))
+      )
+    );
+    const pickKey = lottery
+      ? weightedPick(roastPick.probs)
+      : topKey(roastPick.probs);
+    const roast = candidates.find((r) => r.key === pickKey) ?? candidates[0];
+
+    render(fact, roast);
     show("result");
   } catch (err) {
     console.error(err);
@@ -206,7 +214,7 @@ async function withRetries(fn) {
   throw lastErr;
 }
 
-// One Decisions API call: returns { top, pct } for the highest-probability option.
+// One Decisions API call: returns { probs }, the option-name -> probability map.
 // Real Jev (served by TypeSafe, provider field confirms it). The chat/completions
 // "jev-router" alternative delegates to OpenAI/Google/DeepSeek models and hangs
 // ~40% of the time — don't go back there.
@@ -246,15 +254,7 @@ async function jevChoice(fact, instructions, criteria) {
     if (!probs || Object.keys(probs).length === 0) {
       throw new Error("Jev mumbled something unreadable. Give it another shot.");
     }
-    let top = null;
-    let pct = 0;
-    for (const [key, value] of Object.entries(probs)) {
-      if (value > pct) {
-        top = key;
-        pct = value;
-      }
-    }
-    return { top, pct: Math.round(pct * 100) };
+    return { probs };
   } catch (e) {
     if (e.name === "AbortError") {
       throw new Error("Jev wandered off mid-judgement. Give it another go.");
@@ -265,7 +265,44 @@ async function jevChoice(fact, instructions, criteria) {
   }
 }
 
-function render(fact, roast, category, pct) {
+function topKey(probs) {
+  let best = null;
+  let bestValue = -1;
+  for (const [key, value] of Object.entries(probs)) {
+    if (value > bestValue) {
+      best = key;
+      bestValue = value;
+    }
+  }
+  return best;
+}
+
+// probability-weighted lottery: each option's chance of being picked
+// equals the probability Jev gave it
+function weightedPick(probs) {
+  const entries = Object.entries(probs).filter(([, v]) => v > 0);
+  const total = entries.reduce((sum, [, v]) => sum + v, 0);
+  if (total <= 0) return topKey(probs);
+  let roll = Math.random() * total;
+  for (const [key, value] of entries) {
+    roll -= value;
+    if (roll <= 0) return key;
+  }
+  return entries[entries.length - 1][0];
+}
+
+// randomly remove ~30% of the options before asking Jev (never below 2)
+function dropRandom30(items) {
+  const drop = Math.min(Math.floor(items.length * 0.3), items.length - 2);
+  if (drop <= 0) return items;
+  const pool = [...items];
+  for (let i = 0; i < drop; i++) {
+    pool.splice(Math.floor(Math.random() * pool.length), 1);
+  }
+  return pool;
+}
+
+function render(fact, roast) {
   el("factEcho").textContent = fact;
   el("verdictText").textContent = roast.text;
 }
